@@ -3,6 +3,41 @@ from st_supabase_connection import SupabaseConnection
 import time
 import random
 
+def load_questions_from_github(url):
+    try:
+        resp = requests.get(url)
+        if resp.status_code != 200: 
+            return False
+        
+        # FIX: Force correct decoding or ignore bad characters
+        resp.encoding = 'utf-8' 
+        content = resp.text
+        
+        # If that failed, try decoding bytes manually ignoring errors
+        if not content:
+            content = resp.content.decode('utf-8', errors='ignore')
+
+        lines = content.strip().split('\n')
+        count = 0
+        for line in lines:
+            if "|" in line:
+                # specific split to avoid issues if answer has pipes
+                parts = line.split("|")
+                q = parts[0].strip()
+                # Join the rest in case the answer itself contains a pipe
+                a = "|".join(parts[1:]).strip()
+                
+                if q and a:
+                    conn.table("questions").insert({
+                        "question_text": q, 
+                        "correct_answer": a
+                    }).execute()
+                    count += 1
+        return count
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return False
+        
 st.set_page_config(page_title="Play Quiz", layout="centered")
 conn = st.connection("supabase", type=SupabaseConnection)
 
@@ -17,7 +52,7 @@ def get_current_question(q_id):
 
 # --- LOGIN ---
 if "user_id" not in st.session_state:
-    st.title("í ¼í¾² Join Game")
+    st.title("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Join Game")
     uid = st.text_input("Enter Nickname")
     if st.button("Join"):
         if uid:
@@ -25,7 +60,7 @@ if "user_id" not in st.session_state:
             st.rerun()
     st.stop()
 
-st.write(f"í ½í±¤ **{st.session_state.user_id}**")
+st.write(f"ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ **{st.session_state.user_id}**")
 
 # --- GAME LOOP ---
 state = get_state()
@@ -103,4 +138,5 @@ elif phase == "RESULTS":
 
 # Auto-refresh to keep sync with Admin
 time.sleep(3)
+
 st.rerun()

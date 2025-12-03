@@ -43,23 +43,63 @@ st.set_page_config(page_title="Play Quiz", layout="centered")
 conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- STATE MANAGEMENT ---
-def get_state():
+def safe_db_call(operation_func):
+    """Helper to retry DB calls if connection drops"""
     try:
-        return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
+        return operation_func()
     except Exception:
-        time.sleep(0.5) # Wait a bit if connection drops
-        return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
+        time.sleep(1) # Wait for network to reconnect
+        return operation_func() # Try one last time
+
+def get_state():
+    def op():
+        resp = conn.table("game_state").select("*").eq("id", 1).execute()
+        return resp.data[0] if resp.data else None
+    return safe_db_call(op)
 
 def get_current_question(q_id):
     if not q_id: return None
-    return conn.table("questions").select("*").eq("id", q_id).execute().data[0]
-
+    def op():
+        return conn.table("questions").select("*").eq("id", q_id).execute().data[0]
+    return safe_db_call(op)
 # --- SCORING ENGINE ---
 def calculate_scores():
-    # 1. Fetch EVERYTHING (History of game)
-    all_votes = conn.table("player_votes").select("*").execute().data
-    all_inputs = conn.table("player_inputs").select("*").execute().data
-    all_questions = conn.table("questions").select("*").execute().data
+    def op():
+        # 1. Fetch EVERYTHING 
+        all_votes = conn.table("player_votes").select("*").execute().data
+        all_inputs = conn.table("player_inputs").select("*").execute().data
+        all_questions = conn.table("questions").select("*").execute().data
+        
+        correct_map = {q['id']: q['correct_answer'] for q in all_questions}
+        
+        bluff_map = {}
+        for i in all_inputs:
+            key = (i['question_id'], i['answer_text'])
+            bluff_map[key] = i['user_id']
+            
+        scores = {}
+        
+        for v in all_votes:
+            voter = v['user_id']
+            qid = v['question_id']
+            choice = v['voted_for']
+            correct_answer = correct_map.get(qid)
+            
+            if voter not in scores: scores[voter] = 0
+            
+            # Rule A: Correct Answer (+10)
+            if choice == correct_answer:
+                scores[voter] += 10
+                
+            # Rule B: Bluff Points (+5)
+            bluff_key = (qid, choice)
+            if bluff_key in bluff_map:
+                bluffer = bluff_map[bluff_key]
+                if bluffer not in scores: scores[bluffer] = 0
+                if bluffer != voter:
+                    scores[bluffer] += 5
+        return scores
+    return safe_db_call(op)
     
     # 2. Build Lookup Maps
     # Map: Question ID -> Correct Answer
@@ -208,5 +248,6 @@ elif phase == "RESULTS":
 # Auto-refresh
 time.sleep(3)
 st.rerun()
+
 
 

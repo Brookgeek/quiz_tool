@@ -186,7 +186,7 @@ elif phase == "INPUT":
         if existing:
             st.success("Answer sent! Waiting for others...")
         else:
-            ans = st.text_input("Type your bluff answer:")
+            ans = st.text_input("Type your magnificent answer:")
             if st.button("Submit"):
                 if ans:
                     submit_input(st.session_state.user_id, q_id, ans)
@@ -240,3 +240,4 @@ elif phase == "RESULTS":
 # Auto-refresh loop
 time.sleep(3)
 st.rerun()        
+

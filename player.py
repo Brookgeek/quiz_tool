@@ -1,8 +1,3 @@
-import streamlit as st
-from st_supabase_connection import SupabaseConnection
-import time
-import random
-
 def load_questions_from_github(url):
     try:
         resp = requests.get(url)
@@ -38,6 +33,12 @@ def load_questions_from_github(url):
         st.error(f"Error reading file: {e}")
         return False
         
+import streamlit as st
+from st_supabase_connection import SupabaseConnection
+import time
+import random
+import pandas as pd
+
 st.set_page_config(page_title="Play Quiz", layout="centered")
 conn = st.connection("supabase", type=SupabaseConnection)
 
@@ -50,9 +51,57 @@ def get_current_question(q_id):
     if not q_id: return None
     return conn.table("questions").select("*").eq("id", q_id).execute().data[0]
 
+# --- SCORING ENGINE ---
+def calculate_scores():
+    # 1. Fetch EVERYTHING (History of game)
+    all_votes = conn.table("player_votes").select("*").execute().data
+    all_inputs = conn.table("player_inputs").select("*").execute().data
+    all_questions = conn.table("questions").select("*").execute().data
+    
+    # 2. Build Lookup Maps
+    # Map: Question ID -> Correct Answer
+    correct_map = {q['id']: q['correct_answer'] for q in all_questions}
+    
+    # Map: (Question ID, Answer Text) -> User who wrote it (The Bluffer)
+    # We normalize to lowercase/strip to ensure matches work
+    bluff_map = {}
+    for i in all_inputs:
+        key = (i['question_id'], i['answer_text'])
+        bluff_map[key] = i['user_id']
+        
+    scores = {}
+    
+    # 3. Process Votes
+    for v in all_votes:
+        voter = v['user_id']
+        qid = v['question_id']
+        choice = v['voted_for']
+        correct_answer = correct_map.get(qid)
+        
+        # Initialize 0 if new user
+        if voter not in scores: scores[voter] = 0
+        
+        # Rule A: Correct Answer (+10 to Voter)
+        if choice == correct_answer:
+            scores[voter] += 10
+            
+        # Rule B: Bluff Points (+5 to Bluffer)
+        # Check if this choice was someone's bluff
+        bluff_key = (qid, choice)
+        if bluff_key in bluff_map:
+            bluffer = bluff_map[bluff_key]
+            # Initialize bluffer if not exists
+            if bluffer not in scores: scores[bluffer] = 0
+            
+            # Grant points (User cannot bluff themselves usually, but if they vote for own bluff no points)
+            if bluffer != voter:
+                scores[bluffer] += 5
+                
+    return scores
+
 # --- LOGIN ---
 if "user_id" not in st.session_state:
-    st.title("������ Join Game")
+    st.title("🎲 Join Game")
     uid = st.text_input("Enter Nickname")
     if st.button("Join"):
         if uid:
@@ -60,7 +109,7 @@ if "user_id" not in st.session_state:
             st.rerun()
     st.stop()
 
-st.write(f"������ **{st.session_state.user_id}**")
+st.write(f"👤 **{st.session_state.user_id}**")
 
 # --- GAME LOOP ---
 state = get_state()
@@ -78,7 +127,6 @@ elif phase == "INPUT":
     q_data = get_current_question(q_id)
     st.subheader(q_data['question_text'])
     
-    # Check if this user already answered
     existing = conn.table("player_inputs").select("*").eq("question_id", q_id).eq("user_id", st.session_state.user_id).execute().data
     
     if existing:
@@ -97,22 +145,19 @@ elif phase == "INPUT":
 elif phase == "VOTING":
     q_data = get_current_question(q_id)
     st.subheader(q_data['question_text'])
-    st.write("Which is the REAL answer?")
     
-    # Check if voted
     existing_vote = conn.table("player_votes").select("*").eq("question_id", q_id).eq("user_id", st.session_state.user_id).execute().data
     
     if existing_vote:
         st.success("Vote cast! Waiting for results...")
     else:
-        # Fetch all bluffs + Correct Answer
         bluffs = conn.table("player_inputs").select("answer_text").eq("question_id", q_id).execute().data
+        # Exclude my own answer from options? (Optional, but usually fair)
+        # options = [b['answer_text'] for b in bluffs if b['user_id'] != st.session_state.user_id]
         options = [b['answer_text'] for b in bluffs]
         options.append(q_data['correct_answer'])
         
-        # Deduplicate and Shuffle
         unique_options = list(set(options))
-        # We use a session state seed to ensure shuffle stays consistent for the user during refresh
         if f"shuffled_{q_id}" not in st.session_state:
             random.shuffle(unique_options)
             st.session_state[f"shuffled_{q_id}"] = unique_options
@@ -129,14 +174,29 @@ elif phase == "VOTING":
 elif phase == "RESULTS":
     q_data = get_current_question(q_id)
     st.balloons()
-    st.subheader(f"The Correct Answer: {q_data['correct_answer']}")
+    st.markdown(f"### Correct Answer: **{q_data['correct_answer']}**")
+    st.markdown("---")
+
+    # 1. SHOW VOTES FOR THIS ROUND
+    st.subheader("📊 Round Results")
+    current_votes = conn.table("player_votes").select("*").eq("question_id", q_id).execute().data
+    if current_votes:
+        vote_data = [{"Player": v['user_id'], "Voted For": v['voted_for']} for v in current_votes]
+        st.dataframe(pd.DataFrame(vote_data), hide_index=True)
     
-    # Show who voted for what
-    votes = conn.table("player_votes").select("*").eq("question_id", q_id).execute().data
-    df_votes = [{"Player": v['user_id'], "Voted For": v['voted_for']} for v in votes]
-    st.table(df_votes)
+    st.markdown("---")
+    
+    # 2. SHOW TOTAL LEADERBOARD
+    st.subheader("🏆 Leaderboard")
+    scores = calculate_scores()
+    
+    # Sort by score descending
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # Create nice DataFrame
+    df_scores = pd.DataFrame(sorted_scores, columns=["Player", "Total Points"])
+    st.dataframe(df_scores, hide_index=True, use_container_width=True)
 
-# Auto-refresh to keep sync with Admin
+# Auto-refresh
 time.sleep(3)
-
 st.rerun()

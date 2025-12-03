@@ -3,6 +3,41 @@ from st_supabase_connection import SupabaseConnection
 import requests
 import time
 
+def load_questions_from_github(url):
+    try:
+        resp = requests.get(url)
+        if resp.status_code != 200: 
+            return False
+        
+        # FIX: Force correct decoding or ignore bad characters
+        resp.encoding = 'utf-8' 
+        content = resp.text
+        
+        # If that failed, try decoding bytes manually ignoring errors
+        if not content:
+            content = resp.content.decode('utf-8', errors='ignore')
+
+        lines = content.strip().split('\n')
+        count = 0
+        for line in lines:
+            if "|" in line:
+                # specific split to avoid issues if answer has pipes
+                parts = line.split("|")
+                q = parts[0].strip()
+                # Join the rest in case the answer itself contains a pipe
+                a = "|".join(parts[1:]).strip()
+                
+                if q and a:
+                    conn.table("questions").insert({
+                        "question_text": q, 
+                        "correct_answer": a
+                    }).execute()
+                    count += 1
+        return count
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return False
+
 st.set_page_config(page_title="Admin Controller", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
@@ -43,7 +78,7 @@ if 'admin_logged_in' not in st.session_state:
     st.stop()
 
 # --- MAIN DASHBOARD ---
-st.title("Ì†ΩÌµπÔ∏è Quiz Master Control")
+st.title("ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔ∏è Quiz Master Control")
 state = get_state()
 phase = state['phase']
 total_players = state['total_players']
@@ -56,7 +91,7 @@ if phase == "LOBBY":
     c1, c2 = st.columns(2)
     with c1:
         gh_url = st.text_input("GitHub Raw URL (.txt)")
-        if st.button("Ì†ΩÌ≥• Import Questions"):
+        if st.button("ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ Import Questions"):
             count = load_questions_from_github(gh_url)
             if count: st.success(f"Loaded {count} questions!")
             else: st.error("Failed to load.")
@@ -75,7 +110,7 @@ if phase == "LOBBY":
         q_map = {q['id']: q['question_text'] for q in questions}
         selected_id = st.selectbox("Select First Question", options=q_map.keys(), format_func=lambda x: q_map[x])
         
-        if st.button("Ì†ΩÌ∫Ä START GAME"):
+        if st.button("ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ START GAME"):
             # Clear old inputs for this question just in case
             conn.table("player_inputs").delete().gt("id", 0).execute()
             conn.table("player_votes").delete().gt("id", 0).execute()
@@ -88,7 +123,7 @@ if phase == "LOBBY":
 
 # --- PHASE: INPUT ---
 elif phase == "INPUT":
-    st.subheader("Ì†ΩÌ¥¥ Phase: Collecting Answers")
+    st.subheader("ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ Phase: Collecting Answers")
     
     # Check Progress
     inputs = conn.table("player_inputs").select("*", count="exact").eq("question_id", current_q_id).execute()
@@ -108,7 +143,7 @@ elif phase == "INPUT":
 
 # --- PHASE: VOTING ---
 elif phase == "VOTING":
-    st.subheader("Ì†ΩÌø† Phase: Voting")
+    st.subheader("ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ Phase: Voting")
     
     votes = conn.table("player_votes").select("*", count="exact").eq("question_id", current_q_id).execute()
     count = len(votes.data)
@@ -127,7 +162,7 @@ elif phase == "VOTING":
 
 # --- PHASE: RESULTS ---
 elif phase == "RESULTS":
-    st.subheader("Ì†ΩÌø¢ Phase: Results")
+    st.subheader("ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ Phase: Results")
     st.write("Results are being shown on player screens.")
     
     questions = conn.table("questions").select("*").execute().data
@@ -143,4 +178,5 @@ elif phase == "RESULTS":
         st.success("End of Quiz!")
         if st.button("Back to Lobby"):
             update_state({"phase": "LOBBY"})
+
             st.rerun()

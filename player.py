@@ -146,7 +146,12 @@ elif phase == "VOTING":
     q_data = get_current_question(q_id)
     st.subheader(q_data['question_text'])
     
-    existing_vote = conn.table("player_votes").select("*").eq("question_id", q_id).eq("user_id", st.session_state.user_id).execute().data
+    # RETRY LOGIC: Try to fetch data. If network fails, wait 0.5s and try one more time.
+    try:
+        existing_vote = conn.table("player_votes").select("*").eq("question_id", q_id).eq("user_id", st.session_state.user_id).execute().data
+    except Exception:
+        time.sleep(0.5)
+        existing_vote = conn.table("player_votes").select("*").eq("question_id", q_id).eq("user_id", st.session_state.user_id).execute().data
     
     if existing_vote:
         st.success("Vote cast! Waiting for results...")
@@ -200,3 +205,4 @@ elif phase == "RESULTS":
 # Auto-refresh
 time.sleep(3)
 st.rerun()
+

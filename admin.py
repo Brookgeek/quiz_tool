@@ -1,8 +1,3 @@
-import streamlit as st
-from st_supabase_connection import SupabaseConnection
-import requests
-import time
-
 def load_questions_from_github(url):
     try:
         resp = requests.get(url)
@@ -38,6 +33,11 @@ def load_questions_from_github(url):
         st.error(f"Error reading file: {e}")
         return False
 
+import streamlit as st
+from st_supabase_connection import SupabaseConnection
+import requests
+import time
+
 st.set_page_config(page_title="Admin Controller", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
@@ -49,6 +49,7 @@ def update_state(updates):
     conn.table("game_state").update(updates).eq("id", 1).execute()
 
 def nuke_data():
+    # Only called on HARD RESET
     conn.table("questions").delete().gt("id", 0).execute()
     conn.table("player_inputs").delete().gt("id", 0).execute()
     conn.table("player_votes").delete().gt("id", 0).execute()
@@ -57,14 +58,20 @@ def nuke_data():
 def load_questions_from_github(url):
     try:
         resp = requests.get(url)
-        if resp.status_code != 200: return False
-        lines = resp.text.strip().split('\n')
+        resp.encoding = 'utf-8' # Fix encoding issues
+        content = resp.text
+        if not content: return False
+        
+        lines = content.strip().split('\n')
         count = 0
         for line in lines:
             if "|" in line:
-                q, a = line.split("|", 1)
-                conn.table("questions").insert({"question_text": q.strip(), "correct_answer": a.strip()}).execute()
-                count += 1
+                parts = line.split("|")
+                q = parts[0].strip()
+                a = "|".join(parts[1:]).strip()
+                if q and a:
+                    conn.table("questions").insert({"question_text": q, "correct_answer": a}).execute()
+                    count += 1
         return count
     except: return False
 
@@ -77,8 +84,21 @@ if 'admin_logged_in' not in st.session_state:
             st.rerun()
     st.stop()
 
+# --- SIDEBAR: PROTECTED RESET ---
+with st.sidebar:
+    st.header("⚠️ Danger Zone")
+    reset_pwd = st.text_input("Confirm Password to Reset", type="password", key="reset_pwd")
+    if st.button("HARD RESET GAME"):
+        if reset_pwd == st.secrets["admin"]["password"]:
+            nuke_data()
+            st.success("Game Nuke Initiated.")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("Wrong Password!")
+
 # --- MAIN DASHBOARD ---
-st.title("������️ Quiz Master Control")
+st.title("🕹️ Quiz Master Control")
 state = get_state()
 phase = state['phase']
 total_players = state['total_players']
@@ -91,7 +111,7 @@ if phase == "LOBBY":
     c1, c2 = st.columns(2)
     with c1:
         gh_url = st.text_input("GitHub Raw URL (.txt)")
-        if st.button("������ Import Questions"):
+        if st.button("📥 Import Questions"):
             count = load_questions_from_github(gh_url)
             if count: st.success(f"Loaded {count} questions!")
             else: st.error("Failed to load.")
@@ -110,20 +130,13 @@ if phase == "LOBBY":
         q_map = {q['id']: q['question_text'] for q in questions}
         selected_id = st.selectbox("Select First Question", options=q_map.keys(), format_func=lambda x: q_map[x])
         
-        if st.button("������ START GAME"):
-            # Clear old inputs for this question just in case
-            conn.table("player_inputs").delete().gt("id", 0).execute()
-            conn.table("player_votes").delete().gt("id", 0).execute()
+        if st.button("🚀 START GAME"):
             update_state({"phase": "INPUT", "current_question_id": selected_id})
             st.rerun()
-    
-    if st.button("⚠️ Reset Everything"):
-        nuke_data()
-        st.rerun()
 
 # --- PHASE: INPUT ---
 elif phase == "INPUT":
-    st.subheader("������ Phase: Collecting Answers")
+    st.subheader("🔴 Phase: Collecting Answers")
     
     # Check Progress
     inputs = conn.table("player_inputs").select("*", count="exact").eq("question_id", current_q_id).execute()
@@ -143,7 +156,7 @@ elif phase == "INPUT":
 
 # --- PHASE: VOTING ---
 elif phase == "VOTING":
-    st.subheader("������ Phase: Voting")
+    st.subheader("🟠 Phase: Voting")
     
     votes = conn.table("player_votes").select("*", count="exact").eq("question_id", current_q_id).execute()
     count = len(votes.data)
@@ -162,7 +175,7 @@ elif phase == "VOTING":
 
 # --- PHASE: RESULTS ---
 elif phase == "RESULTS":
-    st.subheader("������ Phase: Results")
+    st.subheader("🟢 Phase: Results")
     st.write("Results are being shown on player screens.")
     
     questions = conn.table("questions").select("*").execute().data
@@ -171,12 +184,10 @@ elif phase == "RESULTS":
     if current_index + 1 < len(questions):
         next_q = questions[current_index + 1]
         if st.button(f"Start Next Question: {next_q['question_text']}"):
-             # Clear inputs/votes for the NEW question
             update_state({"phase": "INPUT", "current_question_id": next_q['id']})
             st.rerun()
     else:
         st.success("End of Quiz!")
         if st.button("Back to Lobby"):
             update_state({"phase": "LOBBY"})
-
             st.rerun()

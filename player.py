@@ -44,8 +44,11 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- STATE MANAGEMENT ---
 def get_state():
-    resp = conn.table("game_state").select("*").eq("id", 1).execute()
-    return resp.data[0] if resp.data else None
+    try:
+        return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
+    except Exception:
+        time.sleep(0.5) # Wait a bit if connection drops
+        return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
 
 def get_current_question(q_id):
     if not q_id: return None
@@ -205,4 +208,5 @@ elif phase == "RESULTS":
 # Auto-refresh
 time.sleep(3)
 st.rerun()
+
 

@@ -43,7 +43,11 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- HELPER FUNCTIONS ---
 def get_state():
-    return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
+    try:
+        return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
+    except Exception:
+        time.sleep(0.5) # Wait a bit if connection drops
+        return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
 
 def update_state(updates):
     conn.table("game_state").update(updates).eq("id", 1).execute()
@@ -196,4 +200,5 @@ elif phase == "RESULTS":
         if st.button("Back to Lobby"):
             update_state({"phase": "LOBBY"})
             st.rerun()
+
 

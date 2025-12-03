@@ -1,6 +1,7 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
+import requests
 import time
 
 # --- CONFIGURATION ---
@@ -15,10 +16,8 @@ if 'admin_authenticated' not in st.session_state:
 
 # --- HELPER FUNCTIONS ---
 def get_game_state():
-    # Fetches the global game state (Phase + Current Question)
     response = conn.table("game_state").select("*").execute()
     if not response.data:
-        # Initialize if empty
         conn.table("game_state").insert({"id": 1, "phase": "LOBBY"}).execute()
         return {"id": 1, "phase": "LOBBY"}
     return response.data[0]
@@ -35,18 +34,41 @@ def get_current_question(q_id):
     return response.data[0] if response.data else None
 
 def get_all_questions():
-    # Fetch questions ordered by creation time
     response = conn.table("questions").select("*").order("created_at").execute()
     return response.data
 
 def reset_game_data():
-    # Clear answers but KEEP questions
     conn.table("quiz_answers").delete().gt("id", 0).execute()
     update_game_state("LOBBY", None)
 
 def nuke_questions():
-    # Clear ALL questions to start fresh
     conn.table("questions").delete().gt("id", 0).execute()
+
+def fetch_questions_from_github(raw_url):
+    try:
+        response = requests.get(raw_url)
+        if response.status_code != 200:
+            return False, "Failed to load URL."
+        
+        lines = response.text.strip().split('\n')
+        count = 0
+        
+        for line in lines:
+            if "|" in line:
+                parts = line.split("|")
+                # Take the first part as question, the rest as answer (in case answer has pipes)
+                q = parts[0].strip()
+                a = "|".join(parts[1:]).strip()
+                
+                if q and a:
+                    conn.table("questions").insert({
+                        "question_text": q, 
+                        "correct_answer": a
+                    }).execute()
+                    count += 1
+        return True, f"Successfully imported {count} questions!"
+    except Exception as e:
+        return False, str(e)
 
 # --- ADMIN LOGIN SIDEBAR ---
 with st.sidebar:
@@ -54,6 +76,7 @@ with st.sidebar:
     if not st.session_state.admin_authenticated:
         pwd = st.text_input("Enter Admin Password", type="password")
         if st.button("Login"):
+            # Check password against secrets
             if pwd == st.secrets["admin"]["password"]:
                 st.session_state.admin_authenticated = True
                 st.success("Access Granted")
@@ -61,7 +84,6 @@ with st.sidebar:
             else:
                 st.error("Wrong Password")
     
-    # LOGOUT BUTTON
     if st.session_state.admin_authenticated:
         if st.button("Logout"):
             st.session_state.admin_authenticated = False
@@ -73,29 +95,45 @@ phase = state['phase']
 current_q_id = state.get('current_question_id')
 
 # ==========================================
-# 👑 ADMIN VIEW (Only visible if logged in)
+# 👑 ADMIN VIEW
 # ==========================================
 if st.session_state.admin_authenticated:
     st.markdown("---")
     st.subheader("🛠️ Host Control Panel")
     
-    # 1. LOBBY PHASE: BUILD THE DECK
+    # 1. LOBBY: BUILD DECK
     if phase == "LOBBY":
-        st.info("Step 1: Add all your questions for this game.")
+        st.info("Build your deck below.")
         
-        # Add Question Form
-        with st.form("add_q"):
-            c1, c2 = st.columns([3, 1])
-            q_text = c1.text_input("Question")
-            a_text = c2.text_input("Real Answer")
-            if st.form_submit_button("Add to Deck"):
-                if q_text and a_text:
-                    conn.table("questions").insert({
-                        "question_text": q_text, 
-                        "correct_answer": a_text
-                    }).execute()
-                    st.success("Added!")
-                    st.rerun()
+        tab1, tab2 = st.tabs(["Manual Add", "Import from GitHub"])
+        
+        with tab1:
+            with st.form("add_q"):
+                c1, c2 = st.columns([3, 1])
+                q_text = c1.text_input("Question")
+                a_text = c2.text_input("Real Answer")
+                if st.form_submit_button("Add Single Question"):
+                    if q_text and a_text:
+                        conn.table("questions").insert({
+                            "question_text": q_text, 
+                            "correct_answer": a_text
+                        }).execute()
+                        st.success("Added!")
+                        st.rerun()
+
+        with tab2:
+            st.markdown("Paste the **Raw** GitHub URL of your `.txt` file.")
+            st.markdown("Format per line: `Question | Answer`")
+            gh_url = st.text_input("GitHub Raw URL")
+            if st.button("📥 Load Deck from File"):
+                if gh_url:
+                    success, msg = fetch_questions_from_github(gh_url)
+                    if success:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
         # Show Deck
         questions = get_all_questions()
@@ -104,8 +142,7 @@ if st.session_state.admin_authenticated:
             st.dataframe(pd.DataFrame(questions)[['question_text', 'correct_answer']])
             
             col1, col2 = st.columns(2)
-            if col1.button("🚀 START GAME"):
-                # Pick the first question automatically
+            if col1.button("🚀 START GAME (First Question)"):
                 first_q = questions[0]
                 update_game_state("INPUT", first_q['id'])
                 st.rerun()
@@ -113,15 +150,12 @@ if st.session_state.admin_authenticated:
             if col2.button("🗑️ Clear All Questions"):
                 nuke_questions()
                 st.rerun()
-        else:
-            st.warning("Add at least one question to start.")
 
-    # 2. GAME LOOP (INPUT -> VOTING -> RESULTS)
+    # 2. GAME LOOP
     elif phase in ["INPUT", "VOTING", "RESULTS"]:
         current_q = get_current_question(current_q_id)
         st.write(f"**Live Question:** {current_q['question_text']}")
         
-        # Navigation Buttons
         c1, c2, c3 = st.columns(3)
         
         if phase == "INPUT":
@@ -138,72 +172,49 @@ if st.session_state.admin_authenticated:
                 
         elif phase == "RESULTS":
             st.write("🟢 Results shown.")
-            st.markdown("### What's Next?")
             
-            # Logic to find the next question
+            # Find next question
             all_qs = get_all_questions()
             current_index = next((i for i, item in enumerate(all_qs) if item["id"] == current_q_id), -1)
             
             col_next, col_end = st.columns(2)
-            
-            # Check if there is a next question
             if current_index + 1 < len(all_qs):
                 next_q = all_qs[current_index + 1]
                 if col_next.button(f"⏭️ Next: {next_q['question_text'][:20]}..."):
                     update_game_state("INPUT", next_q['id'])
                     st.rerun()
             else:
-                st.success("No more questions in deck!")
+                st.success("End of Deck!")
             
-            if col_end.button("🏁 End Game (Show Final Score)"):
+            if col_end.button("🏁 End Game"):
                 update_game_state("GAME_OVER")
                 st.rerun()
 
-    # 3. GAME OVER
     elif phase == "GAME_OVER":
-        st.success("Game Finished!")
-        if st.button("🔄 Start New Game (Reset)"):
+        if st.button("🔄 Start New Game"):
             reset_game_data()
             st.rerun()
 
 # ==========================================
-# 👤 PLAYER VIEW (Visible to everyone)
+# 👤 PLAYER VIEW
 # ==========================================
 st.title("🎲 Dynamic Quiz")
 
 if not st.session_state.admin_authenticated:
-    # --- PHASE: LOBBY ---
     if phase == "LOBBY":
-        st.info("Waiting for the host to set up the game...")
-        st.image("https://media.giphy.com/media/xTkcEQACH24SMPxIQg/giphy.gif") # Waiting GIF
-        
-        # Login
+        st.info("Waiting for host...")
         if "user_id" not in st.session_state:
-            uid = st.text_input("Enter your Nickname to join:")
+            uid = st.text_input("Nickname:")
             if st.button("Join"):
                 st.session_state.user_id = uid
                 st.rerun()
         else:
             st.success(f"Ready as: **{st.session_state.user_id}**")
 
-    # --- PHASE: GAME OVER ---
-    elif phase == "GAME_OVER":
-        st.balloons()
-        st.header("🏆 Final Standings")
-        
-        # Calculate scores
-        # (Assuming you added scoring logic in the voting phase previously, 
-        # otherwise this just lists participants)
-        users = conn.table("quiz_answers").select("user_id").execute().data
-        unique_users = list(set([u['user_id'] for u in users]))
-        st.write("Thanks for playing:", ", ".join(unique_users))
-
-    # --- PHASE: INPUT ---
     elif phase == "INPUT":
         q_data = get_current_question(current_q_id)
         if q_data:
             st.subheader(f"Q: {q_data['question_text']}")
-            
             if "user_id" in st.session_state:
                 ans = st.text_input("Your Bluff:")
                 if st.button("Submit"):
@@ -213,19 +224,17 @@ if not st.session_state.admin_authenticated:
                         "answer": ans
                     }).execute()
                     st.success("Sent!")
-            else:
-                st.warning("Please refresh and join in the lobby first!")
 
-    # --- PHASE: VOTING & RESULTS ---
-    elif phase in ["VOTING", "RESULTS"]:
+    elif phase == "VOTING":
         q_data = get_current_question(current_q_id)
         st.subheader(f"Q: {q_data['question_text']}")
-        
-        if phase == "VOTING":
-            st.info("👀 Look at the big screen to vote!")
-        else:
-            st.success(f"The answer was: **{q_data['correct_answer']}**")
+        st.info("Look at the main screen to vote!")
+        # [Note: You would typically fetch all answers from DB here and show Radio buttons]
 
-    # Auto-refresh for players
+    elif phase == "RESULTS":
+        q_data = get_current_question(current_q_id)
+        st.balloons()
+        st.subheader(f"Correct Answer: {q_data['correct_answer']}")
+
     time.sleep(2)
     st.rerun()

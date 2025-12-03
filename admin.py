@@ -49,11 +49,16 @@ def update_state(updates):
     conn.table("game_state").update(updates).eq("id", 1).execute()
 
 def nuke_data():
-    # Only called on HARD RESET
-    conn.table("questions").delete().gt("id", 0).execute()
-    conn.table("player_inputs").delete().gt("id", 0).execute()
+    # 1. First, unlink the current question from the game state
+    # (Otherwise game_state prevents question deletion)
+    conn.table("game_state").update({"current_question_id": None, "phase": "LOBBY", "total_players": 0}).eq("id", 1).execute()
+    
+    # 2. Delete the DEPENDENT data first (The Children)
     conn.table("player_votes").delete().gt("id", 0).execute()
-    update_state({"phase": "LOBBY", "total_players": 0, "current_question_id": None})
+    conn.table("player_inputs").delete().gt("id", 0).execute()
+    
+    # 3. NOW you can safely delete the questions (The Parent)
+    conn.table("questions").delete().gt("id", 0).execute()
 
 def load_questions_from_github(url):
     try:
@@ -191,3 +196,4 @@ elif phase == "RESULTS":
         if st.button("Back to Lobby"):
             update_state({"phase": "LOBBY"})
             st.rerun()
+

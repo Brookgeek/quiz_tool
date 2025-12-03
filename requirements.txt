@@ -1,3 +1,3 @@
 streamlit
+st-supabase-connection
 pandas
-streamlit-google-sheets-connection

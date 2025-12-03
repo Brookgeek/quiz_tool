@@ -11,12 +11,16 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- HELPER FUNCTIONS ---
 def get_game_state():
-    # Fetch the single row that controls the game for everyone
-    return conn.query("*", table="game_state", ttl=0).data[0]
+    # NEW WORKING CODE
+    # We use .table().select().execute() instead of .query()
+    response = conn.table("game_state").select("*").execute()
+    return response.data[0]
 
 def get_current_question(q_id):
     if not q_id: return None
-    return conn.query("*", table="questions", ttl=0).eq("id", q_id).data[0]
+    # NEW WORKING CODE
+    response = conn.table("questions").select("*").eq("id", q_id).execute()
+    return response.data[0]
 
 def update_game_state(phase, question_id=None):
     data = {"phase": phase}
@@ -111,3 +115,4 @@ elif phase == "RESULTS":
 # Auto-refresh helper for users so they don't have to hit F5
 time.sleep(2)
 st.rerun()
+

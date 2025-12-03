@@ -1,4 +1,0 @@
-streamlit
-st-supabase-connection
-pandas
-requests

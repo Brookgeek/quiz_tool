@@ -173,7 +173,10 @@ with col_controls:
             count = load_questions_from_github(gh_url)
             if count: st.success(f"Loaded {count} questions!")
         
-        num_players = st.number_input("Total Players", min_value=1, value=state.get('total_players', 2))
+        # 1. Get value from DB
+        db_val = state.get('total_players', 0)
+        # 2. Ensure it is at least 1 before putting it in the widget
+        safe_val = db_val if db_val >= 1 else 2
         if st.button("Set Player Count"):
             update_state({"total_players": num_players})
             st.success("Saved.")
@@ -285,3 +288,4 @@ with col_mirror:
 # Auto-refresh
 time.sleep(2)
 st.rerun()
+

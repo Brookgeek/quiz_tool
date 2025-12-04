@@ -77,8 +77,8 @@ def get_current_question(q_id):
 
 def nuke_data():
     def op():
-        # Delete children first, then parent
-        conn.table("game_state").update({"current_question_id": None, "phase": "LOBBY", "total_players": 0}).eq("id", 1).execute()
+        # IMPORTANT: Reset total_players to 2 (not 0) to prevent Input Box crashes
+        conn.table("game_state").update({"current_question_id": None, "phase": "LOBBY", "total_players": 2}).eq("id", 1).execute()
         conn.table("player_votes").delete().gt("id", 0).execute()
         conn.table("player_inputs").delete().gt("id", 0).execute()
         conn.table("questions").delete().gt("id", 0).execute()
@@ -155,7 +155,7 @@ if not state:
     st.stop()
 
 phase = state['phase']
-total_players = state['total_players']
+total_players = state.get('total_players', 2) # Default to 2 if None
 current_q_id = state['current_question_id']
 
 # Layout: Two Columns (Controls | Live Monitor)
@@ -173,10 +173,12 @@ with col_controls:
             count = load_questions_from_github(gh_url)
             if count: st.success(f"Loaded {count} questions!")
         
-        # 1. Get value from DB
-        db_val = state.get('total_players', 0)
-        # 2. Ensure it is at least 1 before putting it in the widget
-        safe_val = db_val if db_val >= 1 else 2
+        st.markdown("---")
+        
+        # FIX: Ensure value is at least 1 to prevent Streamlit Crash
+        safe_val = total_players if total_players >= 1 else 2
+        
+        num_players = st.number_input("Total Players", min_value=1, value=safe_val)
         if st.button("Set Player Count"):
             update_state({"total_players": num_players})
             st.success("Saved.")
@@ -288,4 +290,3 @@ with col_mirror:
 # Auto-refresh
 time.sleep(2)
 st.rerun()
-

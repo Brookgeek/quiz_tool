@@ -8,8 +8,14 @@ import json
 st.set_page_config(page_title="Admin Pro", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- SAFETY & HELPERS ---
+# ==========================================
+# 🛡️ SAFETY LAYER (Prevents Network Crashes)
+# ==========================================
 def run_safe(operation):
+    """
+    Tries to run a database command. 
+    If it crashes (httpx error), it waits 1 second and tries again.
+    """
     try:
         return operation()
     except Exception:
@@ -19,6 +25,9 @@ def run_safe(operation):
         except Exception:
             return None
 
+# ==========================================
+# 🧠 HELPER FUNCTIONS
+# ==========================================
 def get_state():
     def op(): return conn.table("game_state").select("*").eq("id", 1).execute().data[0]
     return run_safe(op)
@@ -28,7 +37,6 @@ def update_state(updates):
     run_safe(op)
 
 def log_event(round_id, l_type, data):
-    # Saves data to DB for crash recovery
     def op():
         conn.table("game_logs").insert({
             "round_id": round_id, "log_type": l_type, "details": json.dumps(data)
@@ -36,73 +44,143 @@ def log_event(round_id, l_type, data):
     run_safe(op)
 
 def calculate_scores_snapshot():
-    # Helper to get current scores for logging
-    all_votes = conn.table("player_votes").select("*").execute().data
-    all_inputs = conn.table("player_inputs").select("*").execute().data
-    all_qs = conn.table("questions").select("*").execute().data
-    
-    q_map = {q['id']: q['correct_answer'] for q in all_qs}
-    bluff_map = {(i['question_id'], i['answer_text']): i['user_id'] for i in all_inputs}
-    
-    scores = {}
-    for v in all_votes:
-        voter = v['user_id']
-        qid = v['question_id']
-        choice = v['voted_for']
+    # --- THIS WAS THE CRASHING FUNCTION. NOW FIXED. ---
+    def op():
+        # Fetch data safely inside the wrapper
+        all_votes = conn.table("player_votes").select("*").execute().data
+        all_inputs = conn.table("player_inputs").select("*").execute().data
+        all_qs = conn.table("questions").select("*").execute().data
         
-        scores[voter] = scores.get(voter, 0)
-        if choice == q_map.get(qid): scores[voter] += 10
+        q_map = {q['id']: q['correct_answer'] for q in all_qs}
+        bluff_map = {(i['question_id'], i['answer_text']): i['user_id'] for i in all_inputs}
         
-        bluffer = bluff_map.get((qid, choice))
-        if bluffer and bluffer != voter:
-            scores[bluffer] = scores.get(bluffer, 0) + 5
-    return scores
+        scores = {}
+        for v in all_votes:
+            voter = v['user_id']
+            qid = v['question_id']
+            choice = v['voted_for']
+            
+            # 1. Init Voter Score
+            scores[voter] = scores.get(voter, 0)
+            
+            # 2. Points for Correct Answer (+10)
+            if choice == q_map.get(qid): 
+                scores[voter] += 10
+            
+            # 3. Points for Bluffing Others (+5)
+            bluffer = bluff_map.get((qid, choice))
+            if bluffer and bluffer != voter:
+                scores[bluffer] = scores.get(bluffer, 0) + 5
+                
+        return scores
+    
+    # Execute safely
+    return run_safe(op)
 
 def nuke_data():
     def op():
+        # Reset Game State
         conn.table("game_state").update({"current_question_id": None, "phase": "LOBBY", "total_players": 2}).eq("id", 1).execute()
+        # Delete Children
         conn.table("player_votes").delete().gt("id", 0).execute()
         conn.table("player_inputs").delete().gt("id", 0).execute()
-        conn.table("players").delete().neq("user_id", "xyz").execute() # Delete all players
         conn.table("game_logs").delete().gt("id", 0).execute()
+        # Delete Players (except Admin/System if needed, here we wipe all)
+        conn.table("players").delete().neq("user_id", "SYSTEM").execute()
+        # Delete Parents
         conn.table("questions").delete().gt("id", 0).execute()
     run_safe(op)
 
-# --- AUTH ---
+def load_questions_from_github(url):
+    try:
+        resp = requests.get(url)
+        resp.encoding = 'utf-8'
+        content = resp.text
+        if not content: return False
+        
+        lines = content.strip().split('\n')
+        count = 0
+        for line in lines:
+            if "|" in line:
+                parts = line.split("|")
+                q = parts[0].strip()
+                a = "|".join(parts[1:]).strip()
+                if q and a:
+                    conn.table("questions").insert({"question_text": q, "correct_answer": a}).execute()
+                    count += 1
+        return count
+    except: return False
+
+def get_pending_players():
+    def op(): return conn.table("players").select("*").eq("status", "PENDING").execute().data
+    return run_safe(op) or []
+
+def get_approved_players():
+    def op(): return conn.table("players").select("*").eq("status", "APPROVED").execute().data
+    return run_safe(op) or []
+
+def approve_player(uid):
+    def op(): conn.table("players").update({"status": "APPROVED"}).eq("user_id", uid).execute()
+    run_safe(op)
+
+# ==========================================
+# 🔒 AUTHENTICATION
+# ==========================================
 if 'admin_logged_in' not in st.session_state:
-    pwd = st.text_input("Password", type="password")
+    pwd = st.text_input("Admin Password", type="password")
     if st.button("Login"):
         if pwd == st.secrets["admin"]["password"]:
             st.session_state.admin_logged_in = True
             st.rerun()
     st.stop()
 
-# --- SIDEBAR: LEADERBOARD & LOGS ---
+# ==========================================
+# 🕹️ SIDEBAR (Leaderboard & Logs)
+# ==========================================
 with st.sidebar:
     st.header("🏆 Live Standings")
+    
+    # Calculate scores safely now
     curr_scores = calculate_scores_snapshot()
+    
     if curr_scores:
         df = pd.DataFrame(list(curr_scores.items()), columns=["Player", "Score"])
         df = df.sort_values("Score", ascending=False)
-        st.dataframe(df, hide_index=True)
+        st.dataframe(df, hide_index=True, use_container_width=True)
     else:
         st.write("No points yet.")
         
     st.divider()
+    
     with st.expander("System Logs"):
-        logs = conn.table("game_logs").select("*").order("created_at", desc=True).execute().data
+        def fetch_logs():
+            return conn.table("game_logs").select("*").order("created_at", desc=True).limit(20).execute().data
+        logs = run_safe(fetch_logs)
         if logs:
             st.write(logs)
             st.download_button("Download Logs JSON", json.dumps(logs), "game_logs.json")
 
     with st.expander("Danger Zone"):
+        reset_pwd = st.text_input("Reset Password", type="password")
         if st.button("☢️ HARD RESET"):
-            nuke_data()
-            st.rerun()
+            if reset_pwd == st.secrets["admin"]["password"]:
+                nuke_data()
+                st.success("Game Wiped.")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Wrong Password")
 
-# --- MAIN APP ---
+# ==========================================
+# 🚀 MAIN DASHBOARD
+# ==========================================
 st.title("🛡️ Admin Console")
+
 state = get_state()
+if not state:
+    st.warning("Connecting...")
+    st.stop()
+
 phase = state['phase']
 q_id = state['current_question_id']
 
@@ -110,83 +188,95 @@ q_id = state['current_question_id']
 if phase == "LOBBY":
     c1, c2 = st.columns(2)
     with c1:
-        # Import Logic (Same as before)
-        gh = st.text_input("GitHub URL")
-        if st.button("Import"):
-            # (Insert your import logic here from previous code)
-            pass 
+        st.subheader("⚙️ Setup")
+        gh_url = st.text_input("GitHub Raw URL (.txt)")
+        if st.button("📥 Import Questions"):
+            count = load_questions_from_github(gh_url)
+            if count: st.success(f"Loaded {count} questions!")
         
-        # Player Count
-        tot = st.number_input("Max Players", min_value=1, value=state.get('total_players', 2))
+        # Safe Input for Players
+        db_val = state.get('total_players', 0)
+        safe_val = db_val if db_val >= 1 else 2
+        tot = st.number_input("Max Players", min_value=1, value=safe_val)
+        
         if st.button("Update Count"):
             update_state({"total_players": tot})
+            st.success("Saved.")
+            
+        # Question Picker
+        def get_qs(): return conn.table("questions").select("*").execute().data
+        qs = run_safe(get_qs)
+        
+        if qs:
+            st.divider()
+            selected = st.selectbox("Start Question", [q['id'] for q in qs], format_func=lambda x: next((i['question_text'] for i in qs if i['id'] == x), x))
+            if st.button("🚀 START GAME"):
+                update_state({"phase": "INPUT", "current_question_id": selected})
+                st.rerun()
     
     with c2:
         st.subheader("🚪 Admission Gate")
-        # Fetch pending players
-        pending = conn.table("players").select("*").eq("status", "PENDING").execute().data
-        approved = conn.table("players").select("*").eq("status", "APPROVED").execute().data
+        pending = get_pending_players()
+        approved = get_approved_players()
         
-        st.write(f"Approved: {len(approved)} | Pending: {len(pending)}")
+        st.metric("Approved Players", len(approved))
         
         if pending:
+            st.warning(f"{len(pending)} Pending Requests:")
             for p in pending:
                 col_p1, col_p2 = st.columns([3, 1])
-                col_p1.write(f"**{p['user_id']}** wants to join.")
-                if col_p2.button("Admit", key=p['user_id']):
-                    conn.table("players").update({"status": "APPROVED"}).eq("user_id", p['user_id']).execute()
+                col_p1.write(f"**{p['user_id']}**")
+                if col_p2.button("Admit", key=f"admit_{p['user_id']}"):
+                    approve_player(p['user_id'])
                     st.rerun()
-        
-    st.divider()
-    # Start Game Logic
-    qs = conn.table("questions").select("*").execute().data
-    if qs:
-        selected = st.selectbox("Start Question", [q['id'] for q in qs])
-        if st.button("🚀 START GAME"):
-            update_state({"phase": "INPUT", "current_question_id": selected})
-            st.rerun()
+        else:
+            st.info("No pending requests.")
 
 # 2. INPUT (Moderation)
 elif phase == "INPUT":
     st.subheader("📝 Moderation Phase")
     
-    inputs = conn.table("player_inputs").select("*").eq("question_id", q_id).execute().data
-    approved_players = len(conn.table("players").select("*").eq("status", "APPROVED").execute().data)
+    def get_inputs(): return conn.table("player_inputs").select("*").eq("question_id", q_id).execute().data
+    inputs = run_safe(get_inputs) or []
     
-    st.metric("Submissions", f"{len(inputs)} / {approved_players}")
+    approved = get_approved_players()
+    st.metric("Submissions", f"{len(inputs)} / {len(approved)}")
     
-    # MODERATION FORM
     with st.form("mod_form"):
         st.write("Edit bluffs before voting (Fix typos):")
         edited_data = {}
         for row in inputs:
-            # Show text input for each user's answer
+            # Edit Answer Text
             val = st.text_input(f"{row['user_id']}'s answer:", value=row['answer_text'])
             edited_data[row['id']] = val
             
         if st.form_submit_button("✅ Save & Start Voting"):
-            # 1. Update DB with edited text
+            # Update DB
             for db_id, new_text in edited_data.items():
-                conn.table("player_inputs").update({"answer_text": new_text}).eq("id", db_id).execute()
+                def update_op(did=db_id, txt=new_text):
+                    conn.table("player_inputs").update({"answer_text": txt}).eq("id", did).execute()
+                run_safe(update_op)
             
-            # 2. Log this round's finalized bluffs
+            # Log Event
             log_event(q_id, "BLUFFS_FINALIZED", edited_data)
             
-            # 3. Move Phase
             update_state({"phase": "VOTING"})
             st.rerun()
 
 # 3. VOTING
 elif phase == "VOTING":
     st.subheader("🗳️ Voting in Progress")
-    votes = conn.table("player_votes").select("*").eq("question_id", q_id).execute().data
-    approved_players = len(conn.table("players").select("*").eq("status", "APPROVED").execute().data)
     
-    st.metric("Votes", f"{len(votes)} / {approved_players}")
+    def get_votes(): return conn.table("player_votes").select("*").eq("question_id", q_id).execute().data
+    votes = run_safe(get_votes) or []
     
-    if len(votes) >= approved_players:
+    approved = get_approved_players()
+    st.metric("Votes Cast", f"{len(votes)} / {len(approved)}")
+    
+    if len(votes) >= len(approved):
+        st.success("All votes in!")
         if st.button("Reveal Results"):
-            # Log scores at end of round
+            # Log Scores Snapshot
             scores = calculate_scores_snapshot()
             log_event(q_id, "SCORES_END_ROUND", scores)
             
@@ -196,9 +286,11 @@ elif phase == "VOTING":
 # 4. RESULTS
 elif phase == "RESULTS":
     st.subheader("📊 Results & Reveal")
+    st.success("Results are live on player screens.")
     
-    # Next Question Logic
-    qs = conn.table("questions").select("*").execute().data
+    def get_all_qs(): return conn.table("questions").select("*").execute().data
+    qs = run_safe(get_all_qs) or []
+    
     curr_idx = next((i for i, q in enumerate(qs) if q["id"] == q_id), -1)
     
     if curr_idx + 1 < len(qs):
@@ -208,7 +300,10 @@ elif phase == "RESULTS":
             st.rerun()
     else:
         st.balloons()
-        st.write("Game Over")
+        st.write("🎉 Game Over! Final scores are in the sidebar.")
+        if st.button("Return to Lobby"):
+            update_state({"phase": "LOBBY"})
+            st.rerun()
 
 time.sleep(2)
 st.rerun()

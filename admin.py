@@ -236,6 +236,7 @@ if phase == "LOBBY":
 elif phase == "INPUT":
     st.subheader("📝 Moderation Phase")
     
+    # Fetch inputs safely
     def get_inputs(): return conn.table("player_inputs").select("*").eq("question_id", q_id).execute().data
     inputs = run_safe(get_inputs) or []
     
@@ -245,9 +246,15 @@ elif phase == "INPUT":
     with st.form("mod_form"):
         st.write("Edit bluffs before voting (Fix typos):")
         edited_data = {}
+        
         for row in inputs:
-            # Edit Answer Text
-            val = st.text_input(f"{row['user_id']}'s answer:", value=row['answer_text'])
+            # FIX: We added 'key=...' using the unique row ID from the database
+            # This prevents the DuplicateElementId error if a user submits twice.
+            val = st.text_input(
+                f"{row['user_id']}'s answer:", 
+                value=row['answer_text'],
+                key=f"edit_{row['id']}" 
+            )
             edited_data[row['id']] = val
             
         if st.form_submit_button("✅ Save & Start Voting"):
@@ -307,3 +314,4 @@ elif phase == "RESULTS":
 
 time.sleep(2)
 st.rerun()
+

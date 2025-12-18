@@ -79,10 +79,13 @@ def calculate_leaderboard():
 
 # --- MAIN APP LOGIC ---
 
+# --- MAIN APP LOGIC ---
+
 # 1. LOGIN SCREEN
 if "user_id" not in st.session_state:
     st.title("🎲 Join Quiz")
     uid = st.text_input("Enter Nickname")
+    
     if st.button("Request to Join"):
         if uid:
             # GHOST PLAYER BACKDOOR
@@ -90,13 +93,30 @@ if "user_id" not in st.session_state:
                 st.session_state.user_id = uid
                 st.session_state.is_ghost = True
                 st.rerun()
+            
+            # CHECK DATABASE STATUS FIRST
+            # This fixes the "Re-join" bug
+            current_status = check_player_status(uid)
+            
+            if current_status == "APPROVED":
+                # If they were already approved, let them back in immediately!
+                st.session_state.user_id = uid
+                st.session_state.is_ghost = False
+                st.success(f"Welcome back, {uid}!")
+                time.sleep(1)
+                st.rerun()
+                
+            elif current_status == "BANNED":
+                st.error("You are banned from this game.")
+                
             else:
+                # If they are new (or PENDING), register them
                 register_player(uid)
                 st.session_state.user_id = uid
                 st.session_state.is_ghost = False
                 st.rerun()
     st.stop()
-
+    
 # 2. STATUS CHECK
 user_id = st.session_state.user_id
 is_ghost = st.session_state.get("is_ghost", False)
@@ -241,3 +261,4 @@ elif phase == "RESULTS":
 # Auto-refresh
 time.sleep(3)
 st.rerun()
+

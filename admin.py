@@ -236,39 +236,62 @@ if phase == "LOBBY":
 elif phase == "INPUT":
     st.subheader("📝 Moderation Phase")
     
-    # Fetch inputs safely
+    # 1. Fetch Data
     def get_inputs(): return conn.table("player_inputs").select("*").eq("question_id", q_id).execute().data
     inputs = run_safe(get_inputs) or []
     
     approved = get_approved_players()
-    st.metric("Submissions", f"{len(inputs)} / {len(approved)}")
+    total_players = len(approved)
+    submitted_count = len(inputs)
     
-    with st.form("mod_form"):
-        st.write("Edit bluffs before voting (Fix typos):")
-        edited_data = {}
+    st.metric("Submissions", f"{submitted_count} / {total_players}")
+    
+    # 2. CHECK: Is everyone finished?
+    if submitted_count < total_players:
+        # CASE A: Still Waiting -> Block Editing
+        st.warning(f"⚠️ Waiting for {total_players - submitted_count} more player(s)...")
+        st.info("Editing will unlock automatically when everyone has submitted.")
         
-        for row in inputs:
-            # FIX: We added 'key=...' using the unique row ID from the database
-            # This prevents the DuplicateElementId error if a user submits twice.
-            val = st.text_input(
-                f"{row['user_id']}'s answer:", 
-                value=row['answer_text'],
-                key=f"edit_{row['id']}" 
-            )
-            edited_data[row['id']] = val
+        # Show who has finished so you can yell at slow players
+        if inputs:
+            submitted_names = [i['user_id'] for i in inputs]
+            st.write(f"✅ **Received:** {', '.join(submitted_names)}")
             
-        if st.form_submit_button("✅ Save & Start Voting"):
-            # Update DB
-            for db_id, new_text in edited_data.items():
-                def update_op(did=db_id, txt=new_text):
-                    conn.table("player_inputs").update({"answer_text": txt}).eq("id", did).execute()
-                run_safe(update_op)
-            
-            # Log Event
-            log_event(q_id, "BLUFFS_FINALIZED", edited_data)
-            
-            update_state({"phase": "VOTING"})
+        # Optional: "Force Unlock" button in case a player disconnects/leaves
+        if st.button("⚠️ Force Unlock (Someone left)"):
+            # This is a hack to bypass the check if needed
+            st.session_state.force_unlock = True
             st.rerun()
+
+    else:
+        # CASE B: Everyone Finished (or Forced) -> Show Edit Form
+        st.success("🎉 All answers received! You may now edit and start voting.")
+        
+        with st.form("mod_form"):
+            st.write("Edit bluffs before voting (Fix typos):")
+            edited_data = {}
+            
+            for row in inputs:
+                # Unique key ensures no crashes
+                val = st.text_input(
+                    f"{row['user_id']}'s answer:", 
+                    value=row['answer_text'],
+                    key=f"edit_{row['id']}" 
+                )
+                edited_data[row['id']] = val
+                
+            if st.form_submit_button("✅ Save & Start Voting"):
+                # Update DB
+                for db_id, new_text in edited_data.items():
+                    def update_op(did=db_id, txt=new_text):
+                        conn.table("player_inputs").update({"answer_text": txt}).eq("id", did).execute()
+                    run_safe(update_op)
+                
+                # Log Event
+                log_event(q_id, "BLUFFS_FINALIZED", edited_data)
+                
+                update_state({"phase": "VOTING"})
+                st.rerun()
 
 # 3. VOTING
 elif phase == "VOTING":
@@ -314,4 +337,5 @@ elif phase == "RESULTS":
 
 time.sleep(2)
 st.rerun()
+
 
